@@ -10,46 +10,52 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-      - name: Setup Node (for frontend and node-api)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
 
-      - name: Setup Python (for FastAPI)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    - name: Build React frontend
+      run: |
+        cd frontend
+        npm ci
+        npm run build
 
-      - name: Build Frontend
-        run: |
-          cd frontend
-          npm install
-          npm run build
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # Optional: Package backend or node-api if needed
+    - name: Deploy to GCE via SSH
+      env:
+        GCE_INSTANCE_IP: ${{ secrets.GCE_INSTANCE_IP }}
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh -o StrictHostKeyChecking=no user@$GCE_INSTANCE_IP << 'EOF'
+          cd /path/to/your/project
+          git pull origin main
+          # Run your backend install/build commands here, e.g.,
+          # npm install && pm2 restart all
+          # or commands to restart your FastAPI services
+        EOF
+        
+        
 
-      - name: Upload files to GCE via SSH
-        uses: appleboy/scp-action@v0.1.4
-        with:
-          host: ${{ secrets.GCE_HOST }}
-          username: ${{ secrets.GCE_USERNAME }}
-          key: ${{ secrets.GCE_SSH_KEY }}
-          source: "./"
-          target: "/home/${{ secrets.GCE_USERNAME }}/app"
+- Use GitHub Secrets for everything sensitive (keys, IPs, tokens).
+- Make sure your deploy commands on GCE restart your services properly.
+- You can expand this workflow by adding tests, linting, or docker builds before deploy.
+- If you want smoother deploys, look into tools like pm2 for Node or systemd for FastAPI.
 
-      - name: SSH into GCE and restart services
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.GCE_HOST }}
-          username: ${{ secrets.GCE_USERNAME }}
-          key: ${{ secrets.GCE_SSH_KEY }}
-          script: |
-            cd /home/${{ secrets.GCE_USERNAME }}/app
-            # Optional: reload env vars
-            # source .env
-            # Restart services
-            sudo systemctl restart fastapi
-            sudo systemctl restart nodeapi
+Useful Links
+[Google Cloud GitHub Actions](https://github.com/google-github-actions)
+
+[GitHub Actions docs](https://docs.github.com/en/actions)
+
+[Google Cloud SSH setup](https://cloud.google.com/compute/docs/tutorials/ssh)
+[Google Cloud SSH setup](https://cloud.google.com/compute/docs/tutorials/ssh)
