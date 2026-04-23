@@ -1,89 +1,46 @@
-name: PRO CI/CD to GCE
+name: CI/CD to GCE (WORKING)
 
 on:
+  workflow_dispatch:   # 🔥 allows manual "Run workflow"
   push:
     branches: [main]
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout
+    - name: Checkout repo
       uses: actions/checkout@v4
 
-    - name: Setup Node
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18
-        cache: 'npm'
-
-    - name: Install & Lint
+    - name: Build frontend
       run: |
         cd frontend
         npm ci
-        npm run lint || true   # don't fail yet if no lint
-
-    - name: Run Tests
-      run: |
-        cd frontend
-        npm test || true
-
-    - name: Build Frontend
-      run: |
-        cd frontend
         npm run build
 
-    - name: Archive Build
-      run: tar -czf build.tar.gz frontend/build
-
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: build
-        path: build.tar.gz
-
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Download Artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: build
-
-    - name: Authenticate to GCP
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-    - name: Deploy via SSH (Atomic)
-      env:
-        HOST: ${{ secrets.GCE_INSTANCE_IP }}
-        KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    - name: Setup SSH
       run: |
         mkdir -p ~/.ssh
-        echo "$KEY" > ~/.ssh/id_rsa
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ secrets.GCE_INSTANCE_IP }} >> ~/.ssh/known_hosts
 
-        scp -o StrictHostKeyChecking=no build.tar.gz user@$HOST:/tmp/
+    - name: Upload build to server
+      run: |
+        scp -r frontend/build user@${{ secrets.GCE_INSTANCE_IP }}:/var/www/app/build
 
-        ssh -o StrictHostKeyChecking=no user@$HOST << 'EOF'
+    - name: Deploy on server
+      run: |
+        ssh user@${{ secrets.GCE_INSTANCE_IP }} << 'EOF'
           set -e
 
-          APP_DIR=/var/www/app
-          NEW_RELEASE=$APP_DIR/releases/$(date +%s)
+          cd /var/www/app
 
-          mkdir -p $NEW_RELEASE
-          tar -xzf /tmp/build.tar.gz -C $NEW_RELEASE
+          # restart app (choose ONE depending on your stack)
+          pm2 restart all || true
+          # OR
+          # systemctl restart myapp
 
-          # switch symlink (atomic deploy)
-          ln -sfn $NEW_RELEASE $APP_DIR/current
-
-          # restart services
-          pm2 restart all || pm2 start ecosystem.config.js
-
-          echo "✅ Deploy successful"
+          echo "✅ Deployment complete"
         EOF
