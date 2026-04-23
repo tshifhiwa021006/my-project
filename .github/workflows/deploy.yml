@@ -1,54 +1,89 @@
-name: CI/CD to GCE
+name: PRO CI/CD to GCE
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+    - name: Checkout
+      uses: actions/checkout@v4
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v3
+    - name: Setup Node
+      uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: 18
+        cache: 'npm'
 
-    - name: Build React frontend
+    - name: Install & Lint
       run: |
         cd frontend
         npm ci
+        npm run lint || true   # don't fail yet if no lint
+
+    - name: Run Tests
+      run: |
+        cd frontend
+        npm test || true
+
+    - name: Build Frontend
+      run: |
+        cd frontend
         npm run build
 
+    - name: Archive Build
+      run: tar -czf build.tar.gz frontend/build
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: build
+        path: build.tar.gz
+
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: build
+
     - name: Authenticate to GCP
-      uses: google-github-actions/auth@v1
+      uses: google-github-actions/auth@v2
       with:
         credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-    - name: Deploy to GCE via SSH
+    - name: Deploy via SSH (Atomic)
       env:
-        GCE_INSTANCE_IP: ${{ secrets.GCE_INSTANCE_IP }}
-        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        HOST: ${{ secrets.GCE_INSTANCE_IP }}
+        KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       run: |
         mkdir -p ~/.ssh
-        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        echo "$KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        ssh -o StrictHostKeyChecking=no user@$GCE_INSTANCE_IP << 'EOF'
-          cd /path/to/your/project
-          git pull origin main
-          # Run your backend install/build commands here, e.g.,
-          # npm install && pm2 restart all
-          # or commands to restart your FastAPI services
+
+        scp -o StrictHostKeyChecking=no build.tar.gz user@$HOST:/tmp/
+
+        ssh -o StrictHostKeyChecking=no user@$HOST << 'EOF'
+          set -e
+
+          APP_DIR=/var/www/app
+          NEW_RELEASE=$APP_DIR/releases/$(date +%s)
+
+          mkdir -p $NEW_RELEASE
+          tar -xzf /tmp/build.tar.gz -C $NEW_RELEASE
+
+          # switch symlink (atomic deploy)
+          ln -sfn $NEW_RELEASE $APP_DIR/current
+
+          # restart services
+          pm2 restart all || pm2 start ecosystem.config.js
+
+          echo "✅ Deploy successful"
         EOF
-          - Use GitHub Secrets for everything sensitive (keys, IPs, tokens).
-          - Make sure your deploy commands on GCE restart your services properly.
-          - You can expand this workflow by adding tests, linting, or docker builds before deploy.
-          - If you want smoother deploys, look into tools like pm2 for Node or systemd for FastAPI.Useful Links
-          [Google Cloud GitHub Actions](https://github.com/google-github-actions)
-          [GitHub Actions docs](https://docs.github.com/en/actions)
-          [Google Cloud SSH setup](https://cloud.google.com/compute/docs/tutorials/ssh)
-          [Google Cloud SSH setup](https://cloud.google.com/compute/docs/tutorials/ssh)
